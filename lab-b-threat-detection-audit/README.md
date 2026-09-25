@@ -6,7 +6,7 @@ Then: aws rds start-activity-stream --resource-arn <cluster-arn-from-output> --m
 Attack Sim: psql -> SELECT * FROM customers; -> check SNS email + CloudWatch + GuardDuty
 Independent: YES - no Lab A needed.
 
-Problem: E-commerce company suspects an insider is exfiltrating data. Need real-time audit of every SQL statement and automated alerts for suspicious patterns (e.g., SELECT * on the customers table at 2 AM, login from a new IP).
+PROBLEM: E-commerce company suspects an insider is exfiltrating data. Need real-time audit of every SQL statement and automated alerts for suspicious patterns (e.g., SELECT * on the customers table at 2 AM, login from a new IP).
 
 
 Design & Plan:

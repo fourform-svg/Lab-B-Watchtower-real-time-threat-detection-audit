@@ -1,0 +1,103 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Lab B - Watchtower - Independent - Threat Detection with Activity Streams, Kinesis, GuardDuty, EventBridge, SNS
+
+Parameters:
+  DBMasterPassword:
+    Type: String
+    NoEcho: true
+  SOCEmail:
+    Type: String
+    Description: Email for SOC alerts
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.medium
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties: {CidrBlock: 10.1.0.0/16, Tags: [{Key: Name, Value: lab-b-vpc}]}
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties: {VpcId: !Ref VPC, CidrBlock: 10.1.2.0/24, AvailabilityZone: !Select [0, !GetAZs '']}
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties: {VpcId: !Ref VPC, CidrBlock: 10.1.3.0/24, AvailabilityZone: !Select [1, !GetAZs '']}
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties: {DBSubnetGroupDescription: lab-b private, SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]}
+
+  KMSKey:
+    Type: AWS::KMS::Key
+    Properties: {Description: Lab B CMK, EnableKeyRotation: true, KeyPolicy: {Version: '2012-10-17', Statement: [{Effect: Allow, Principal: {AWS: !Sub arn:aws:iam::${AWS::AccountId}:root}, Action: 'kms:*', Resource: '*'}]}}
+  KMSAlias:
+    Type: AWS::KMS::Alias
+    Properties: {AliasName: alias/rds/lab-b-secure, TargetKeyId: !Ref KMSKey}
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties: {GroupDescription: Lab B DB SG, VpcId: !Ref VPC, SecurityGroupIngress: [{IpProtocol: tcp, FromPort: 5432, ToPort: 5432, CidrIp: 10.1.0.0/16}]}
+
+  AuroraCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      Engine: aurora-postgresql
+      EngineVersion: '15.4'
+      MasterUsername: dbadmin
+      MasterUserPassword: !Ref DBMasterPassword
+      DatabaseName: labbdb
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds: [!Ref DBSecurityGroup]
+      StorageEncrypted: true
+      KmsKeyId: !Ref KMSKey
+      EnableCloudwatchLogsExports: [postgresql]
+
+  AuroraInstance:
+    Type: AWS::RDS::DBInstance
+    Properties: {DBClusterIdentifier: !Ref AuroraCluster, DBInstanceClass: !Ref DBInstanceClass, Engine: aurora-postgresql, PubliclyAccessible: false}
+
+  KinesisStream:
+    Type: AWS::Kinesis::Stream
+    Properties: {Name: lab-b-activity-stream, ShardCount: 1, StreamEncryption: {EncryptionType: KMS, KeyId: !Ref KMSKey}}
+
+  SecurityLakeBucket:
+    Type: AWS::S3::Bucket
+    Properties: {BucketName: !Sub lab-b-security-lake-${AWS::AccountId}-${AWS::Region}}
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: {LogGroupName: /aws/rds/cluster/lab-b-aurora/audit, RetentionInDays: 7}
+
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties: {TopicName: lab-b-soc-alerts, Subscription: [{Protocol: email, Endpoint: !Ref SOCEmail}]}
+
+  GuardDutyDetector:
+    Type: AWS::GuardDuty::Detector
+    Properties: {Enable: true, Features: [{Name: RDS_LOGIN_EVENTS, Status: ENABLED}]}
+
+  EventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: lab-b-guardduty-finding
+      EventPattern: {source: [aws.guardduty], detail: {resourceType: [RDSDB]}}
+      Targets: [{Arn: !Ref SNSTopic, Id: SNS}]
+
+  EventBridgeToSNSPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref SNSTopic]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow, Principal: {Service: events.amazonaws.com}, Action: sns:Publish, Resource: !Ref SNSTopic
+
+Outputs:
+  ClusterArn:
+    Value: !GetAtt AuroraCluster.DBClusterArn
+    Description: Use for aws rds start-activity-stream --resource-arn <this> --mode async --kms-key-id <KMSKeyId>
+  KMSKeyId:
+    Value: !Ref KMSKey
+  KinesisStreamName:
+    Value: !Ref KinesisStream
+  SNSTopicArn:
+    Value: !Ref SNSTopic
